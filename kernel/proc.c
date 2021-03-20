@@ -85,6 +85,20 @@ allocpid() {
   return pid;
 }
 
+// Return the number of UNUSED proc slots
+uint64 getFreeProc(void)
+{
+  struct proc *p;
+
+  uint64 total = 0;
+  for(p = proc; p < &proc[NPROC]; p++){
+    if(p->state != UNUSED)
+      total += 1;
+  }
+
+  return total;
+}
+
 // Look in the process table for an UNUSED proc.
 // If found, initialize state required to run in the kernel,
 // and return with p->lock held.
@@ -151,6 +165,7 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+  p->traceMask = 0;
 }
 
 // Create a user page table for a given process,
