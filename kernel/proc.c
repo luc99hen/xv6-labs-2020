@@ -23,7 +23,7 @@ extern char trampoline[]; // trampoline.S
 
 // initialize the proc table at boot time.
 void
-procinit(void)
+procinit()
 {
   struct proc *p;
   
@@ -38,7 +38,7 @@ procinit(void)
       if(pa == 0)
         panic("kalloc");
       uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+      kvmmap(kernel_pagetable , va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
       p->kstack = va;
   }
   kvminithart();
@@ -121,6 +121,18 @@ found:
     return 0;
   }
 
+  // Allocate process's kernel page table
+  if((p->kernel_pt = kvminit(0)) == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
+  // map process's kernel stack
+  uint64 va = p->kstack;
+  uint64 pa = kvmpa(va);    // get pa from kernel page table
+  kvmmap(p->kernel_pt, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -142,6 +154,9 @@ freeproc(struct proc *p)
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
+  if(p->kernel_pt)
+    proc_freekernelpt(p->kernel_pt);
+  p->kernel_pt = 0;
   p->sz = 0;
   p->pid = 0;
   p->parent = 0;
@@ -193,6 +208,14 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
   uvmfree(pagetable, sz);
+}
+
+// Free a process's kernel page table
+// without freeing the leaf physical mem
+void
+proc_freekernelpt(pagetable_t pt)
+{
+  uvmfreeKernelPT(pt);
 }
 
 // a user program that calls exec("/init")
@@ -473,8 +496,10 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        kvmsetpt(p->kernel_pt);
         swtch(&c->context, &p->context);
 
+        kvminithart();  // use default kernel_pagetable when no process is running
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
