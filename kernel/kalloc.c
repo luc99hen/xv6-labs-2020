@@ -50,6 +50,11 @@ kfree(void *pa)
 
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
+  
+  // check if pa has already been freed
+  if(kmem.freelist && (pa == kmem.freelist || memcmp(pa, kmem.freelist, PGSIZE) == 0)){
+    return;
+  }
 
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);

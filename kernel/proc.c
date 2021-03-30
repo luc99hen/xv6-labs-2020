@@ -85,6 +85,13 @@ allocpid() {
   return pid;
 }
 
+void 
+mapKernelStack(struct proc* p, pagetable_t kpt){
+  uint64 va = p->kstack;
+  uint64 pa = kvmpa(va);    // get pa from origin kernel page table
+  kvmmap(kpt, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+}
+
 // Look in the process table for an UNUSED proc.
 // If found, initialize state required to run in the kernel,
 // and return with p->lock held.
@@ -129,9 +136,7 @@ found:
   }
 
   // map process's kernel stack
-  uint64 va = p->kstack;
-  uint64 pa = kvmpa(va);    // get pa from kernel page table
-  kvmmap(p->kernel_pt, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  mapKernelStack(p, p->kernel_pt);
 
   // Set up new context to start executing at forkret,
   // which returns to user space.
@@ -241,7 +246,7 @@ userinit(void)
   
   // allocate one user page and copy init's instructions
   // and data into it.
-  uvminit(p->pagetable, initcode, sizeof(initcode));
+  uvminit(p->pagetable, p->kernel_pt, initcode, sizeof(initcode));
   p->sz = PGSIZE;
 
   // prepare for the very first "return" from kernel to user.
@@ -269,7 +274,12 @@ growproc(int n)
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
+    if(kvmcopy(p->pagetable, p->kernel_pt, p->sz, sz) == 0){
+      uvmdealloc(p->pagetable, sz, p->sz);
+      return -1;
+    }
   } else if(n < 0){
+    kvmdealloc(p->kernel_pt, sz, sz + n);
     sz = uvmdealloc(p->pagetable, sz, sz + n);
   }
   p->sz = sz;
@@ -291,7 +301,7 @@ fork(void)
   }
 
   // Copy user memory from parent to child.
-  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
+  if(uvmcopy(p->pagetable, np->pagetable, np->kernel_pt, p->sz) < 0){
     freeproc(np);
     release(&np->lock);
     return -1;
