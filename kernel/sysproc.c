@@ -52,11 +52,15 @@ sys_sbrk(void)
   return addr;
 }
 
+
 uint64
 sys_sleep(void)
 {
   int n;
   uint ticks0;
+
+  // backtrace test
+  backtrace();
 
   if(argint(0, &n) < 0)
     return -1;
@@ -94,4 +98,40 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+
+uint64
+sys_sigreturn(void)
+{
+  struct proc* p = myproc();
+  memmove(p->trapframe, &p->alarmRestoreFrame, sizeof p->alarmRestoreFrame);
+  memset(&p->alarmRestoreFrame, 0, sizeof p->alarmRestoreFrame);   // reset retore frame
+  return 0;
+}
+
+uint64
+sys_sigalarm(void)
+{
+  int ticks;
+  uint64 handler;
+
+
+  
+  if(argint(0, &ticks) < 0)
+    return -1;
+  if(argaddr(1, &handler) < 0)
+    return -1;
+  
+  struct proc* p = myproc();
+  // sigalarm shouldn't be called when there has been a previous call
+  if(p->ticks > 0 && ticks > 0){
+    printf("Warning: sys_sigalarm: re-entrant prevented !!!");
+    return -1;
+  }
+ 
+  p->ticks = ticks;
+  p->handler = handler;   //addr in user's vm
+  p->curtick = 0;
+  return 0;
 }

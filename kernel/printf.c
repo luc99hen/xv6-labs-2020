@@ -121,6 +121,7 @@ panic(char *s)
   printf("panic: ");
   printf(s);
   printf("\n");
+  backtrace();
   panicked = 1; // freeze uart output from other CPUs
   for(;;)
     ;
@@ -131,4 +132,18 @@ printfinit(void)
 {
   initlock(&pr.lock, "pr");
   pr.locking = 1;
+}
+
+
+void
+backtrace(void)
+{
+  uint64 curFrame = r_fp();
+  uint64 stackBoundary = PGROUNDUP(curFrame);
+
+  printf("backtrace:\n");
+  while(curFrame < stackBoundary){   // can't be ==, why
+    printf("%p\n", *(uint64*)(curFrame-8));  // print return addr
+    curFrame = *(uint64*)(curFrame-16);  // go to callee frame
+  }
 }
