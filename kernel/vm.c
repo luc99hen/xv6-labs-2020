@@ -338,7 +338,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     setRefCnt((void*)pa, +1);
 
   }
-  refCntDebug();
+  // refCntDebug();
   return 0;
 
  err:
@@ -363,6 +363,9 @@ int
 cowallocate(uint64 va){
   struct proc *p = myproc();
   // check if this is a COW page
+  if(va >= MAXVA)
+    return -1;
+
   pte_t* pte = walk(p->pagetable, va, 0);
   if(pte == 0 || (*pte & PTE_COW) == 0){
     printf("COW lab cowallocate: invalid pte");
@@ -370,22 +373,18 @@ cowallocate(uint64 va){
   }
   uint64 pa = PTE2PA(*pte);
   uint new_flags = (PTE_FLAGS(*pte) | PTE_W) & (~PTE_COW);
-  if (getRefCnt((void*)pa) == 1)
-  {
-    // directly remove the COW bit and add W bit
-    *pte = PA2PTE(pa) | new_flags;  
-  } else {
-    // allocate phy page for this COW page
-    char* mem; 
-    if((mem = kalloc()) == 0){
-      printf("COW lab cowallocate: not enough mem");
-      return -1;
-    }
-    memmove(mem, (char*)pa, PGSIZE);
-    // *pte = (*pte & (~PTE_COW)) | PTE_W;
-    *pte = PA2PTE((uint64)mem) | new_flags;
-    setRefCnt((void*)pa, -1);
+
+  // allocate phy page for this COW page
+  char* mem; 
+  if((mem = kalloc()) == 0){
+    printf("COW lab cowallocate: not enough mem");
+    return -1;
   }
+  memmove(mem, (char*)pa, PGSIZE);
+  // *pte = (*pte & (~PTE_COW)) | PTE_W;
+  *pte = PA2PTE((uint64)mem) | new_flags;
+
+  kfree((void*)pa);
   return 0;
   
 }
@@ -402,6 +401,8 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     va0 = PGROUNDDOWN(dstva);
     // pa0 = walkaddr(pagetable, va0);  
     // use customize walkaddr here to detect COW page
+    if(va0 >= MAXVA)
+      return -1;
     pte_t* pte = walk(pagetable, va0, 0);
     if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
       return -1;

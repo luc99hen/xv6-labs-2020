@@ -103,9 +103,8 @@ kfree(void *pa)
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
   
-  acquire(&kmem.lock);
+  
   if(freeRefCnt(pa) > 0){
-    release(&kmem.lock);
     return;
   }
 
@@ -114,6 +113,7 @@ kfree(void *pa)
 
   r = (struct run*)pa;
 
+  acquire(&kmem.lock);
   r->next = kmem.freelist;
   kmem.freelist = r;
   release(&kmem.lock);
