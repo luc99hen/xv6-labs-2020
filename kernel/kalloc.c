@@ -14,6 +14,12 @@ void freerange(void *pa_start, void *pa_end);
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
 
+struct
+{
+  int pa_ref[TOTALPAGE];
+  struct spinlock lock;
+} ref_cnt;
+
 struct run {
   struct run *next;
 };
@@ -23,11 +29,57 @@ struct {
   struct run *freelist;
 } kmem;
 
+
+int getRefCnt(void* pa){
+  uint64 addr = (uint64)pa;
+  return ref_cnt.pa_ref[PAID(addr)];
+}
+
+void setRefCnt(void* pa, int diff){
+  uint64 addr = (uint64)pa;
+  acquire(&ref_cnt.lock);
+  int id = PAID(addr);
+  ref_cnt.pa_ref[id] += diff;
+  release(&ref_cnt.lock);
+}
+
+// atomic free a ref
+int freeRefCnt(void* pa){
+  uint64 addr = (uint64)pa;
+  acquire(&ref_cnt.lock);
+  int id = PAID(addr);
+  ref_cnt.pa_ref[id] -= 1;
+  int res = ref_cnt.pa_ref[id];
+  release(&ref_cnt.lock);
+  return res;
+}
+
+void refCntDebug(){
+  int total = 0;
+  int page = 0;
+  for(int i=0; i<TOTALPAGE; i++){
+    if(ref_cnt.pa_ref[i] < 0)
+      printf("unexpected negative cnt\n");
+    else if(ref_cnt.pa_ref[i] > 0)
+      page += 1;
+    total += ref_cnt.pa_ref[i];   
+  }
+  int left = 0;
+  struct run* tmp = kmem.freelist;
+  while(tmp){
+    left += 1;
+    tmp = tmp->next;
+  }
+  printf("total page: %d, total ref: %d, left: %d\n",page ,total, left);
+}
+
 void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
+  initlock(&ref_cnt.lock, "refcnt");
   freerange(end, (void*)PHYSTOP);
+  memset(ref_cnt.pa_ref, 0, TOTALPAGE*sizeof(int));
 }
 
 void
@@ -50,13 +102,18 @@ kfree(void *pa)
 
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
+  
+  acquire(&kmem.lock);
+  if(freeRefCnt(pa) > 0){
+    release(&kmem.lock);
+    return;
+  }
 
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
 
   r = (struct run*)pa;
 
-  acquire(&kmem.lock);
   r->next = kmem.freelist;
   kmem.freelist = r;
   release(&kmem.lock);
@@ -76,7 +133,15 @@ kalloc(void)
     kmem.freelist = r->next;
   release(&kmem.lock);
 
-  if(r)
+  if(r){
     memset((char*)r, 5, PGSIZE); // fill with junk
+    setRefCnt(r, +1);
+  }
+
+  if(!r){
+    printf("kalloc fail: ");
+    refCntDebug();
+  }
+    
   return (void*)r;
 }

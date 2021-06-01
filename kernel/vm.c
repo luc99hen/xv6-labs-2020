@@ -5,6 +5,9 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
+
 
 /*
  * the kernel's page table.
@@ -311,7 +314,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+  // char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -320,14 +323,22 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+
+    // if((mem = kalloc()) == 0)
+    //   goto err;
+    // memmove(mem, (char*)pa, PGSIZE);
+
+    flags = (flags & (~PTE_W)) | PTE_COW;
+    *pte = PA2PTE(pa) | flags;   // Clear PTE_W in parent 
+    if(mappages(new, i, PGSIZE, pa, flags) != 0){  // allocate page table for child
+      // kfree(mem);
+      printf("COW lab uvmcopy: old phy mem map fail\n");
       goto err;
     }
+    setRefCnt((void*)pa, +1);
+
   }
+  refCntDebug();
   return 0;
 
  err:
@@ -348,6 +359,37 @@ uvmclear(pagetable_t pagetable, uint64 va)
   *pte &= ~PTE_U;
 }
 
+int 
+cowallocate(uint64 va){
+  struct proc *p = myproc();
+  // check if this is a COW page
+  pte_t* pte = walk(p->pagetable, va, 0);
+  if(pte == 0 || (*pte & PTE_COW) == 0){
+    printf("COW lab cowallocate: invalid pte");
+    return -1;
+  }
+  uint64 pa = PTE2PA(*pte);
+  uint new_flags = (PTE_FLAGS(*pte) | PTE_W) & (~PTE_COW);
+  if (getRefCnt((void*)pa) == 1)
+  {
+    // directly remove the COW bit and add W bit
+    *pte = PA2PTE(pa) | new_flags;  
+  } else {
+    // allocate phy page for this COW page
+    char* mem; 
+    if((mem = kalloc()) == 0){
+      printf("COW lab cowallocate: not enough mem");
+      return -1;
+    }
+    memmove(mem, (char*)pa, PGSIZE);
+    // *pte = (*pte & (~PTE_COW)) | PTE_W;
+    *pte = PA2PTE((uint64)mem) | new_flags;
+    setRefCnt((void*)pa, -1);
+  }
+  return 0;
+  
+}
+
 // Copy from kernel to user.
 // Copy len bytes from src to virtual address dstva in a given page table.
 // Return 0 on success, -1 on error.
@@ -358,9 +400,18 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
+    // pa0 = walkaddr(pagetable, va0);  
+    // use customize walkaddr here to detect COW page
+    pte_t* pte = walk(pagetable, va0, 0);
+    if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
       return -1;
+    
+    if(*pte & PTE_COW){
+      if(cowallocate(va0) == -1)
+        return -1;
+    }
+    pa0 = PTE2PA(*pte);
+
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
